@@ -171,19 +171,25 @@ app.get("/user/tweets/", authenticateToken, async (request, response) => {
   let jwtToken = authHeader.split(" ")[1];
   const payload = jwt.verify(jwtToken, "MY_SECRET_TOKEN");
 
-  console.log(payload.username);
-  //username = ${payload.username}
   const query = `SELECT A.tweet, B.likes, A.replies, A.dateTime FROM 
   (SELECT t.tweet_id, t.tweet, COUNT(reply_id) AS replies, t.date_time AS dateTime 
   FROM tweet AS t JOIN user as u ON t.user_id = u.user_id LEFT JOIN reply AS r ON r.tweet_id = t.tweet_id 
-  WHERE u.user_id = 1 GROUP BY t.tweet_id) AS A JOIN 
+  WHERE u.username = '${payload.username}' GROUP BY t.tweet_id) AS A JOIN 
   (SELECT t.tweet_id, COUNT(like_id) AS likes FROM tweet AS t JOIN user as u ON t.user_id = u.user_id JOIN like AS r 
-  ON r.tweet_id = t.tweet_id WHERE u.user_id = 1 GROUP BY t.tweet_id) AS B 
+  ON r.tweet_id = t.tweet_id WHERE u.username = '${payload.username}' GROUP BY t.tweet_id) AS B 
   ON A.tweet_id = B.tweet_id;`;
   const dbObject = await db.all(query);
-  console.log(dbObject);
   response.send(dbObject);
 });
+
+const convertToTweetObject1 = (obj) => {
+  return {
+    tweet: obj.tweet,
+    likes: obj.likes,
+    replies: obj.replies,
+    dateTime: obj.dateTime,
+  };
+};
 
 app.get("/tweets/:tweetId/", authenticateToken, async (request, response) => {
   const authHeader = request.headers["authorization"];
@@ -204,23 +210,37 @@ app.get("/tweets/:tweetId/", authenticateToken, async (request, response) => {
   t.tweet_id = ${tweetId};`;
 
   const dbObject3 = await db.get(checkQuery);
-  console.log(dbObject3);
 
   if (dbObject3 !== undefined) {
-    const query = `
-    SELECT tweet, SUM(like_id) AS likes, SUM(reply_id) AS replies, 
-    date_time AS dateTime FROM tweet as t 
-    JOIN reply as r ON t.tweet_id = r.tweet_id 
-    JOIN like as l on t.tweet_id = l.tweet_id 
-    WHERE t.tweet_id = ${tweetId} GROUP BY t.tweet_id;`;
+    const query = `SELECT * FROM 
+    (SELECT t.tweet_id, t.tweet, COUNT(r.reply_id) AS replies, t.date_time AS dateTime FROM tweet AS t 
+    JOIN reply AS r ON t.tweet_id = r.tweet_id WHERE t.tweet_id = ${tweetId} GROUP BY t.tweet_id) AS A LEFT JOIN  
+    (SELECT t.tweet_id, COUNT(r.like_id) AS likes FROM tweet AS t JOIN like AS r ON t.tweet_id = r.tweet_id 
+    WHERE t.tweet_id = ${tweetId} GROUP BY t.tweet_id) AS B ON A.tweet_id = B.tweet_id;`;
+    //  UNION SELECT * FROM
+    // (SELECT t.tweet_id, t.tweet, COUNT(r.like_id) AS likes, t.date_time AS dateTime FROM tweet AS t
+    // JOIN like AS r ON t.tweet_id = r.tweet_id WHERE t.tweet_id = ${tweetId} GROUP BY t.tweet_id) AS C LEFT JOIN
+    // (SELECT t.tweet_id, COUNT(r.reply_id) AS replies FROM tweet AS t JOIN reply AS r ON t.tweet_id = r.tweet_id
+    // WHERE t.tweet_id = ${tweetId} GROUP BY t.tweet_id) AS D ON C.tweet_id = D.tweet_id;`;
 
-    const dbObject1 = await db.all(query);
-    response.send(dbObject1);
+    const dbObject1 = await db.get(query);
+    console.log(await db.all(query));
+    response.send(convertToTweetObject1(dbObject1));
   } else {
     response.status(401);
     response.send("Invalid Request");
   }
 });
+
+const convertToLikeObject = (object) => {
+  let arr = [];
+  for (item of object) {
+    arr.push(item.username);
+  }
+  return {
+    likes: arr,
+  };
+};
 
 app.get(
   "/tweets/:tweetId/likes/",
@@ -238,28 +258,122 @@ app.get(
     const { tweetId } = request.params;
 
     const checkQuery = `
-  SELECT * FROM follower as f 
-  JOIN tweet as t on f.following_user_id = t.user_id 
-  WHERE f.follower_user_id = ${dbObject.user_id} AND 
-  t.tweet_id = ${tweetId};`;
+        SELECT * FROM follower as f 
+        JOIN tweet as t on f.following_user_id = t.user_id 
+        WHERE f.follower_user_id = ${dbObject.user_id} AND 
+        t.tweet_id = ${tweetId};`;
 
     const dbObject3 = await db.get(checkQuery);
     console.log(dbObject3);
 
     if (dbObject3 !== undefined) {
       const query = `
-    SELECT u.name, r.reply FROM tweet as t 
-    JOIN reply as r ON t.tweet_id = r.tweet_id 
-    JOIN user as u ON r.user_id = u.user_id 
-    WHERE t.tweet_id = ${tweetId};`;
+        SELECT u.username FROM tweet as t 
+        JOIN like as r ON t.tweet_id = r.tweet_id 
+        JOIN user as u ON r.user_id = u.user_id 
+        WHERE t.tweet_id = ${tweetId};`;
 
       const dbObject1 = await db.all(query);
-      response.send(dbObject1);
+      response.send(convertToLikeObject(dbObject1));
     } else {
       response.status(401);
       response.send("Invalid Request");
     }
   }
 );
+
+const convertToReplyObject = (object) => {
+  return {
+    replies: object,
+  };
+};
+
+app.get(
+  "/tweets/:tweetId/replies/",
+  authenticateToken,
+  async (request, response) => {
+    const authHeader = request.headers["authorization"];
+    let jwtToken = authHeader.split(" ")[1];
+    const payload = jwt.verify(jwtToken, "MY_SECRET_TOKEN");
+    //console.log(payload);
+    const getUserID = `
+  SELECT user_id from user WHERE username = '${payload.username}';`;
+    const dbObject = await db.get(getUserID);
+    //console.log(dbObject.user_id);
+
+    const { tweetId } = request.params;
+
+    const checkQuery = `
+        SELECT * FROM follower as f 
+        JOIN tweet as t on f.following_user_id = t.user_id 
+        WHERE f.follower_user_id = ${dbObject.user_id} AND 
+        t.tweet_id = ${tweetId};`;
+
+    const dbObject3 = await db.get(checkQuery);
+    console.log(dbObject3);
+
+    if (dbObject3 !== undefined) {
+      const query = `
+        SELECT u.name, r.reply FROM tweet as t 
+        JOIN reply as r ON t.tweet_id = r.tweet_id 
+        JOIN user as u ON r.user_id = u.user_id 
+        WHERE t.tweet_id = ${tweetId};`;
+
+      const dbObject1 = await db.all(query);
+      response.send(convertToReplyObject(dbObject1));
+    } else {
+      response.status(401);
+      response.send("Invalid Request");
+    }
+  }
+);
+
+app.delete(
+  "/tweets/:tweetId/",
+  authenticateToken,
+  async (request, response) => {
+    const { tweetId } = request.params;
+    const authHeader = request.headers["authorization"];
+    let jwtToken = authHeader.split(" ")[1];
+    const payload = jwt.verify(jwtToken, "MY_SECRET_TOKEN");
+
+    const getUserID = `
+    SELECT user_id from user WHERE username = '${payload.username}';`;
+    const dbObject = await db.get(getUserID);
+
+    const isUserQuote = `
+    SELECT t.tweet_id FROM tweet AS t WHERE 
+    t.user_id = '${dbObject.user_id}';`;
+
+    const dbObject1 = await db.get(isUserQuote);
+
+    if (dbObject1 === undefined) {
+      response.statusCode = 401;
+      response.send("Invalid Request");
+    } else {
+      const removeTweet = `
+        DELETE FROM tweet WHERE tweet_id = ${dbObject1.tweet_id};`;
+      await db.run(removeTweet);
+      response.send("Tweet Removed");
+    }
+  }
+);
+
+app.post("/user/tweets/", authenticateToken, async (request, response) => {
+  const { tweet } = request.body;
+  const createDate = new Date();
+
+  const authHeader = request.headers["authorization"];
+  let jwtToken = authHeader.split(" ")[1];
+  const payload = jwt.verify(jwtToken, "MY_SECRET_TOKEN");
+  const getUserID = `
+  SELECT user_id from user WHERE username = '${payload.username}';`;
+  const dbObject = await db.get(getUserID);
+
+  const insertIntoDB = `
+  INSERT INTO tweet (tweet, user_id, date_time) VALUES ('${tweet}', ${dbObject.user_id}, '${createDate}');`;
+  await db.run(insertIntoDB);
+  response.send("Created a Tweet");
+});
 
 module.exports = app;
